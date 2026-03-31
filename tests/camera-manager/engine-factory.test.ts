@@ -6,6 +6,7 @@ import { GenericCameraManagerEngine } from '../../src/camera-manager/generic/eng
 import { MotionEyeCameraManagerEngine } from '../../src/camera-manager/motioneye/engine-motioneye';
 import { ReolinkCameraManagerEngine } from '../../src/camera-manager/reolink/engine-reolink.js';
 import { TPLinkCameraManagerEngine } from '../../src/camera-manager/tplink/engine-tplink.js';
+import { UnifiProtectCameraManagerEngine } from '../../src/camera-manager/unifiprotect/engine-unifiprotect.js';
 import { Engine } from '../../src/camera-manager/types.js';
 import { StateWatcherSubscriptionInterface } from '../../src/card-controller/hass/state-watcher.js';
 import { CardWideConfig } from '../../src/config/schema/types.js';
@@ -126,6 +127,28 @@ describe('getEngineForCamera()', () => {
           entityRegistryManager: entityRegistryManager,
         }).getEngineForCamera(createHASS(), config),
       ).toBe(Engine.TPLink);
+    });
+  });
+
+  describe('should get a unifiprotect camera', () => {
+    it('from manually set engine', async () => {
+      const config = createCameraConfig({ engine: 'unifiprotect' });
+      expect(await createFactory().getEngineForCamera(createHASS(), config)).toBe(
+        Engine.UnifiProtect,
+      );
+    });
+
+    it('from auto detection', async () => {
+      const config = createCameraConfig({ engine: 'auto', camera_entity: 'camera.foo' });
+      const entityRegistryManager = new EntityRegistryManagerMock([
+        createRegistryEntity({ entity_id: 'camera.foo', platform: 'unifiprotect' }),
+      ]);
+
+      expect(
+        await createFactory({
+          entityRegistryManager: entityRegistryManager,
+        }).getEngineForCamera(createHASS(), config),
+      ).toBe(Engine.UnifiProtect);
     });
   });
 
@@ -265,5 +288,13 @@ describe('createEngine()', () => {
         resolvedMediaCache: mock<ResolvedMediaCache>(),
       }),
     ).toBeInstanceOf(TPLinkCameraManagerEngine);
+  });
+  it('should create unifiprotect engine', async () => {
+    expect(
+      await createFactory().createEngine(Engine.UnifiProtect, {
+        stateWatcher: mock<StateWatcherSubscriptionInterface>(),
+        resolvedMediaCache: mock<ResolvedMediaCache>(),
+      }),
+    ).toBeInstanceOf(UnifiProtectCameraManagerEngine);
   });
 });

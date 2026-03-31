@@ -95,6 +95,7 @@ const ENGINES = [
   'motioneye',
   'reolink',
   'tplink',
+  'unifiprotect',
 ] as const;
 
 export const cameraConfigDefault = {

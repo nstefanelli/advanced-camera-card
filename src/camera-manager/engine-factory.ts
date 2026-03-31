@@ -86,6 +86,19 @@ export class CameraManagerEngineFactory {
           options.eventCallback,
         );
         break;
+      case Engine.UnifiProtect:
+        const { UnifiProtectCameraManagerEngine } = await import(
+          './unifiprotect/engine-unifiprotect'
+        );
+        cameraManagerEngine = new UnifiProtectCameraManagerEngine(
+          this._entityRegistryManager,
+          options.stateWatcher,
+          new BrowseMediaWalker(),
+          options.resolvedMediaCache,
+          new CameraManagerRequestCache(),
+          options.eventCallback,
+        );
+        break;
     }
     return cameraManagerEngine;
   }
@@ -105,6 +118,8 @@ export class CameraManagerEngineFactory {
       engine = Engine.Reolink;
     } else if (cameraConfig.engine === 'tplink') {
       engine = Engine.TPLink;
+    } else if (cameraConfig.engine === 'unifiprotect') {
+      engine = Engine.UnifiProtect;
     } else {
       const cameraEntity = getCameraEntityFromConfig(cameraConfig);
 
@@ -135,6 +150,9 @@ export class CameraManagerEngineFactory {
             break;
           case 'tplink':
             engine = Engine.TPLink;
+            break;
+          case 'unifiprotect':
+            engine = Engine.UnifiProtect;
             break;
           default:
             engine = Engine.Generic;
