@@ -28,6 +28,7 @@ export enum Engine {
   MotionEye = 'motioneye',
   Reolink = 'reolink',
   TPLink = 'tplink',
+  UnifiProtect = 'unifiprotect',
 }
 
 export interface CameraQuery {
