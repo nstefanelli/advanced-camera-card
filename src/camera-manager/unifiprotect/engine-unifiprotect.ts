@@ -23,6 +23,7 @@ import { BrowseMediaCameraManagerEngine } from '../browse-media/engine-browse-me
 import { Camera } from '../camera';
 import { CAMERA_MANAGER_ENGINE_EVENT_LIMIT_DEFAULT } from '../engine';
 import { EntityCamera } from '../entity-camera';
+import { UnifiProtectCamera } from './camera';
 import { CameraManagerReadOnlyConfigStore } from '../store';
 import {
   CameraEventCallback,
@@ -65,6 +66,18 @@ export class UnifiProtectQueryResultsClassifier {
 export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEngine {
   protected _cache = new BrowseMediaCache<BrowseMediaMetadata>();
 
+  // Discovered NVR ID from browse_media root.
+  protected _nvrId: string | null = null;
+
+  // Map of camera friendly name (lowercase) -> Protect camera ID from browse_media.
+  protected _cameraNameToProtectId: Map<string, string> = new Map();
+
+  // Map of entity_id -> Protect camera ID (built during discovery).
+  protected _entityToProtectId: Map<string, string> = new Map();
+
+  // Whether discovery has been attempted.
+  protected _discoveryDone = false;
+
   public constructor(
     entityRegistryManager: EntityRegistryManager,
     stateWatcher: StateWatcherSubscriptionInterface,
@@ -81,6 +94,77 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
       requestCache,
       eventCallback,
     );
+  }
+
+  /**
+   * Discover NVR and camera IDs by browsing media-source://unifiprotect root.
+   * This is called lazily on first event query.
+   */
+  protected async _discover(hass: HomeAssistant): Promise<void> {
+    if (this._discoveryDone) {
+      return;
+    }
+    this._discoveryDone = true;
+
+    try {
+      const result = await hass.callWS<BrowseMedia>({
+        type: 'media_source/browse_media',
+        media_content_id: 'media-source://unifiprotect',
+      });
+
+      if (result?.children) {
+        for (const child of result.children) {
+          const mid = child.media_content_id ?? '';
+          const path = mid.replace('media-source://unifiprotect/', '');
+          const parts = path.split(':');
+
+          if (parts.length >= 1 && !this._nvrId) {
+            this._nvrId = parts[0];
+          }
+
+          if (parts.length >= 3 && parts[1] === 'browse' && parts[2] !== 'all') {
+            const protectCamId = parts[2];
+            const title = (child.title ?? '').toLowerCase();
+            this._cameraNameToProtectId.set(title, protectCamId);
+          }
+        }
+      }
+      // Build entity_id -> Protect ID mapping using hass.states friendly names.
+      // Camera state friendly_name is like "Front PTZ High resolution channel",
+      // and browse_media title is "Front PTZ". Match by prefix.
+      if (hass.states) {
+        for (const [entityId, state] of Object.entries(hass.states)) {
+          if (!entityId.startsWith('camera.')) {
+            continue;
+          }
+          const friendlyName = (
+            state?.attributes?.friendly_name ?? ''
+          ).toLowerCase();
+          for (const [browseTitle, protectId] of this._cameraNameToProtectId) {
+            if (friendlyName.startsWith(browseTitle)) {
+              this._entityToProtectId.set(entityId, protectId);
+              break;
+            }
+          }
+        }
+      }
+    } catch {
+      // Discovery failed — events won't work but live view still will.
+    }
+  }
+
+  /**
+   * Resolve a camera entity to its Protect camera ID for browse_media queries.
+   * Uses the entity_id -> Protect ID mapping built during discovery.
+   */
+  protected _resolveProtectCameraId(
+    camera: EntityCamera,
+  ): string | null {
+    const entityId = camera.getConfig()?.camera_entity;
+    if (entityId) {
+      return this._entityToProtectId.get(entityId) ?? null;
+    }
+    return null;
   }
 
   public getEngineType(): Engine {
@@ -119,8 +203,29 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
       return null;
     }
 
-    // Try to parse the title as a date. Protect event titles may be ISO
-    // timestamps or other date formats.
+    // Protect event titles are like:
+    //   "03/14/26 13:24:28 8s Object Detection - Black Car"
+    // Format: MM/DD/YY HH:MM:SS {duration}s {description}
+    const match = media.title.match(
+      /^(\d{2})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d+)s\s/,
+    );
+    if (match) {
+      const [, month, day, year, hour, min, sec, duration] = match;
+      const fullYear = 2000 + parseInt(year, 10);
+      const startDate = new Date(fullYear, parseInt(month, 10) - 1, parseInt(day, 10),
+        parseInt(hour, 10), parseInt(min, 10), parseInt(sec, 10));
+      const endDate = add(startDate, { seconds: parseInt(duration, 10) });
+
+      if (isValidDate(startDate)) {
+        return {
+          cameraID: cameraID,
+          startDate: startDate,
+          endDate: endDate,
+        };
+      }
+    }
+
+    // Fallback: try ISO date parsing
     const startDate = new Date(media.title);
     if (isValidDate(startDate)) {
       return {
@@ -130,16 +235,19 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
       };
     }
 
-    // If the title is not a parseable date, we still include the media but
-    // without date metadata (it won't match date-range queries).
-    return null;
+    // Last resort: include the media without date metadata so it still shows.
+    return {
+      cameraID: cameraID,
+      startDate: new Date(),
+      endDate: new Date(),
+    };
   }
 
   public async createCamera(
     hass: HomeAssistant,
     cameraConfig: CameraConfig,
   ): Promise<Camera> {
-    const camera = new EntityCamera(cameraConfig, this, {
+    const camera = new UnifiProtectCamera(cameraConfig, this, {
       eventCallback: this._eventCallback,
     });
     return await camera.initialize({
@@ -168,6 +276,9 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
     query: EventQuery,
     engineOptions?: EngineOptions,
   ): Promise<EventQueryResultsMap | null> {
+    // Discover NVR and camera IDs on first use.
+    await this._discover(hass);
+
     // UniFi Protect does not support these query types.
     if (
       query.favorite ||
@@ -193,15 +304,10 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
       let media: RichBrowseMedia<BrowseMediaMetadata>[] = [];
 
       if (camera && camera instanceof EntityCamera) {
-        const entity = camera.getEntity();
-        const configEntryId = entity?.config_entry_id;
-        const uniqueId = entity?.unique_id ? String(entity.unique_id) : null;
-        const cameraDeviceId = uniqueId
-          ? this._getCameraDeviceIdFromUniqueId(uniqueId)
-          : null;
+        const cameraDeviceId = this._resolveProtectCameraId(camera);
 
-        if (configEntryId && cameraDeviceId) {
-          const targets = this._getMediaSourceTargets(configEntryId, cameraDeviceId);
+        if (this._nvrId && cameraDeviceId) {
+          const targets = this._getMediaSourceTargets(this._nvrId, cameraDeviceId);
           const limit =
             perCameraQuery.limit ?? CAMERA_MANAGER_ENGINE_EVENT_LIMIT_DEFAULT;
 
@@ -276,6 +382,8 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
     query: MediaMetadataQuery,
     engineOptions?: EngineOptions,
   ): Promise<MediaMetadataQueryResultsMap | null> {
+    await this._discover(hass);
+
     const output: MediaMetadataQueryResultsMap = new Map();
     const cachedResult =
       engineOptions?.useCache ?? true ? this._requestCache.get(query) : null;
@@ -291,18 +399,13 @@ export class UnifiProtectCameraManagerEngine extends BrowseMediaCameraManagerEng
       if (!camera || !(camera instanceof EntityCamera)) {
         return;
       }
-      const entity = camera.getEntity();
-      const configEntryId = entity?.config_entry_id;
-      const uniqueId = entity?.unique_id ? String(entity.unique_id) : null;
-      const cameraDeviceId = uniqueId
-        ? this._getCameraDeviceIdFromUniqueId(uniqueId)
-        : null;
+      const cameraDeviceId = this._resolveProtectCameraId(camera);
 
-      if (!configEntryId || !cameraDeviceId) {
+      if (!this._nvrId || !cameraDeviceId) {
         return;
       }
 
-      const targets = this._getMediaSourceTargets(configEntryId, cameraDeviceId);
+      const targets = this._getMediaSourceTargets(this._nvrId, cameraDeviceId);
 
       // Walk the browse media to collect events (which contain date info).
       const media = await this._browseMediaWalker.walk(

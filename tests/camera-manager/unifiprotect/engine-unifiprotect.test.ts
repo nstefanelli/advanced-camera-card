@@ -40,6 +40,7 @@ import {
   createHASS,
   createRegistryEntity,
   createStore,
+  TestViewMedia,
 } from '../../test-utils';
 
 vi.mock('../../../src/ha/ws-request');
@@ -171,6 +172,35 @@ describe('UnifiProtectCameraManagerEngine', () => {
     const config = createCameraConfig({ camera_entity: 'camera.front_door' });
     const metadata = engine.getCameraMetadata(hass, config);
     expect(metadata.engineIcon).toBe('unifiprotect');
+  });
+
+  it('should return full camera metadata', () => {
+    const engine = createEngine();
+    const hass = createHASS();
+    const config = createCameraConfig({
+      title: 'Front Door',
+      camera_entity: 'camera.front_door',
+      icon: 'mdi:shield-home',
+    });
+    expect(engine.getCameraMetadata(hass, config)).toEqual({
+      engineIcon: 'unifiprotect',
+      icon: {
+        icon: 'mdi:shield-home',
+        entity: 'camera.front_door',
+        fallback: 'mdi:video',
+      },
+      title: 'Front Door',
+    });
+  });
+
+  it('should return media capabilities with download support', () => {
+    const engine = createEngine();
+    const media = new TestViewMedia({ cameraID: 'front_door' });
+    const capabilities = engine.getMediaCapabilities(media);
+    expect(capabilities).toEqual({
+      canFavorite: false,
+      canDownload: true,
+    });
   });
 
   it('should create camera as EntityCamera', async () => {
